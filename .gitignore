@@ -1,0 +1,37 @@
+# --- C/C++ build artifacts ---
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.a
+*.lib
+*.la
+*.pdb
+
+# --- CMake build artifacts ---
+/build/
+/CMakeFiles
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# --- VSCode / IDE settings ---
+.vscode/
+*.code-workspace
+
+# --- OS-specific files ---
+.DS_Store
+Thumbs.db
+
+# --- Other (e.g., coverage, logs, etc.) ---
+*.gcno
+*.gcda
+*.log
+
+# --- Backup / temporary files ---
+*~
+*.swp
+*.swo
