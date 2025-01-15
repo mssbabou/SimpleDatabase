@@ -3,7 +3,7 @@ import sys
 
 # Server configuration
 HOST = 'localhost'
-PORT = 80
+PORT = 8080
 
 def send_request(method, path, headers=None, body=None, chunked=False):
     try:

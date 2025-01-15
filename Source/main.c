@@ -4,142 +4,122 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-#define PORT 80
-#define BUFFER_SIZE 1024
+#define PORT 8080
+#define BUFFER_SIZE 16384
 
-// Function to read a line from the socket
-ssize_t read_line(int client_fd, char *buffer, size_t max_length)
-{
-    size_t i = 0;
-    char c;
-    while (i < max_length - 1 && read(client_fd, &c, 1) == 1)
-    {
-        buffer[i++] = c;
-        if (c == '\n')
-            break;
-    }
-    buffer[i] = '\0';
-    return i;
+// Helper function to find the end of headers ("\r\n\r\n")
+int find_End_Of_Headers(const char *buffer) {
+    const char *end_of_headers = strstr(buffer, "\r\n\r\n");
+    return end_of_headers ? (end_of_headers - buffer + 4) : -1;
 }
 
-// Function to read a fixed number of bytes from the socket
-ssize_t read_fixed(int client_fd, char *buffer, size_t length)
-{
-    size_t total_read = 0;
-    ssize_t bytes_read;
-
-    while (total_read < length)
-    {
-        bytes_read = read(client_fd, buffer + total_read, length - total_read);
-        if (bytes_read <= 0)
-            return bytes_read;
-        total_read += bytes_read;
-    }
-    return total_read;
-}
-
-// Function to handle an HTTP request
-void handle_request(int client_fd)
-{
+// Function to handle the client request
+void handle_Requests(int client_fd) {
     char buffer[BUFFER_SIZE];
-    char *data = NULL;
-    size_t content_length = 0;
-    int is_chunked = 0;
+    ssize_t bytes_received;
+    char *request = NULL;
+    size_t request_size = 0;
 
-    // Read headers
-    while (read_line(client_fd, buffer, BUFFER_SIZE) > 0)
-    {
-        if (strcmp(buffer, "\r\n") == 0)
+    printf("Receiving request...\n");
+
+    // Keep reading data until headers are fully received
+    while ((bytes_received = read(client_fd, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes_received] = '\0';
+
+        // Allocate memory to store the request
+        request = realloc(request, request_size + bytes_received + 1);
+        memcpy(request + request_size, buffer, bytes_received);
+        request_size += bytes_received;
+        request[request_size] = '\0';
+
+        // Check if headers are complete
+        int header_end = find_End_Of_Headers(request);
+        if (header_end != -1) {
+            printf("Headers received:\n%s\n", request);
+
+            // Check for Content-Length header
+            char *content_length_str = strstr(request, "Content-Length:");
+            size_t content_length = 0;
+            if (content_length_str) {
+                sscanf(content_length_str, "Content-Length: %zu", &content_length);
+            }
+
+            // Read the body if there's a Content-Length
+            if (content_length > 0) {
+                size_t body_received = request_size - header_end;
+                while (body_received < content_length) {
+                    bytes_received = read(client_fd, buffer, sizeof(buffer));
+                    if (bytes_received <= 0) break;
+
+                    request = realloc(request, request_size + bytes_received + 1);
+                    memcpy(request + request_size, buffer, bytes_received);
+                    request_size += bytes_received;
+                    body_received += bytes_received;
+                }
+                request[request_size] = '\0';
+            }
+
+            // Print the full request (headers + body)
+            printf("Full request:\n%s\n", request);
             break;
-
-        if (strncasecmp(buffer, "Content-Length:", 15) == 0)
-        {
-            content_length = strtol(buffer + 15, NULL, 10);
-        }
-        else if (strncasecmp(buffer, "Transfer-Encoding: chunked", 26) == 0)
-        {
-            is_chunked = 1;
         }
     }
 
-    // Read body based on Content-Length or chunked encoding
-    if (content_length > 0)
-    {
-        data = malloc(content_length + 1);
-        if (read_fixed(client_fd, data, content_length) > 0)
-        {
-            data[content_length] = '\0';
-            printf("Body: %s\n", data);
-        }
-    }
-    else if (is_chunked)
-    {
-        size_t total_data_length = 0;
-        while (1)
-        {
-            // Read chunk size
-            read_line(client_fd, buffer, BUFFER_SIZE);
-            size_t chunk_size = strtol(buffer, NULL, 16);
-
-            if (chunk_size == 0)
-                break;
-
-            // Read chunk data
-            data = realloc(data, total_data_length + chunk_size + 1);
-            read_fixed(client_fd, data + total_data_length, chunk_size);
-            total_data_length += chunk_size;
-
-            // Read the trailing CRLF
-            read_line(client_fd, buffer, BUFFER_SIZE);
-        }
-        data[total_data_length] = '\0';
-        printf("Body: %s\n", data);
-    }
-
-    free(data);
+    // Clean up
+    free(request);
+    printf("Request fully received.\n");
 }
 
-int main()
-{
+int main() {
+    // Create the server socket
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0)
-    {
+    if (server_fd < 0) {
         perror("socket");
         exit(EXIT_FAILURE);
     }
 
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Bind the socket to the port
     struct sockaddr_in server_addr = {0};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-    {
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("bind");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 1) < 0)
-    {
+    // Listen for incoming connections
+    if (listen(server_fd, 1) < 0) {
         perror("listen");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
     printf("Server listening on port %d...\n", PORT);
 
+    // Accept a single client connection
     int client_fd = accept(server_fd, NULL, NULL);
-    if (client_fd < 0)
-    {
+    if (client_fd < 0) {
         perror("accept");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
     printf("Client connected...\n");
 
-    handle_request(client_fd);
+    // Handle the client request
+    handle_Requests(client_fd);
 
+    // Clean up
     close(client_fd);
     close(server_fd);
+
     return 0;
 }
