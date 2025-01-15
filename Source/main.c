@@ -1,83 +1,106 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
 
-#include "HTTPServer.h"
+#define PORT 80
+#define BUFFER_SIZE 1024
 
-#define PORT 8080
-
-enum HTTPMethod 
+// Function to read a line from the socket
+ssize_t read_line(int client_fd, char *buffer, size_t max_length)
 {
-    GET,
-    POST,
-    PUT,
-    DELETE
-};
-
-struct HTTPRequestHeader
-{
-    enum HTTPMethod method;
-    char path[1024];
-    long contentLength;
-};
-
-// Returns index in array where pattern begins, or -1 if not found
-int FindFirstPatternString(const unsigned char *array, size_t array_len, const unsigned char *pattern, size_t pattern_len)
-{
-    if (pattern_len == 0 || array_len < pattern_len) {
-        return -1;
-    }
-
-    for (size_t i = 0; i <= array_len - pattern_len; i++) {
-        size_t j;
-        for (j = 0; j < pattern_len; j++) {
-            if (array[i + j] != pattern[j]) {
-                break;
-            }
-        }
-
-        if (j == pattern_len) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-void printHex(const unsigned char *data, size_t length)
-{
-    if (!data) {
-        printf("printHex: data is NULL\n");
-        return;
-    }
-
-    for (size_t i = 0; i < length; i++) {
-        printf("%02x ", data[i]);
-
-        if (i < length - 1) {
-            printf(" ");
-        }
-    }
-
-    printf("\n");
-}
-
-void PrintCharArray(const unsigned char *data, size_t length)
-{
-    for (size_t i = 0; i < length; i++)
+    size_t i = 0;
+    char c;
+    while (i < max_length - 1 && read(client_fd, &c, 1) == 1)
     {
-        printf("%c", data[i]);
+        buffer[i++] = c;
+        if (c == '\n')
+            break;
     }
-    
+    buffer[i] = '\0';
+    return i;
 }
 
-int main(int argc, char *argv[])
-{    
-    // Create the socket
+// Function to read a fixed number of bytes from the socket
+ssize_t read_fixed(int client_fd, char *buffer, size_t length)
+{
+    size_t total_read = 0;
+    ssize_t bytes_read;
+
+    while (total_read < length)
+    {
+        bytes_read = read(client_fd, buffer + total_read, length - total_read);
+        if (bytes_read <= 0)
+            return bytes_read;
+        total_read += bytes_read;
+    }
+    return total_read;
+}
+
+// Function to handle an HTTP request
+void handle_request(int client_fd)
+{
+    char buffer[BUFFER_SIZE];
+    char *data = NULL;
+    size_t content_length = 0;
+    int is_chunked = 0;
+
+    // Read headers
+    while (read_line(client_fd, buffer, BUFFER_SIZE) > 0)
+    {
+        if (strcmp(buffer, "\r\n") == 0)
+            break;
+
+        if (strncasecmp(buffer, "Content-Length:", 15) == 0)
+        {
+            content_length = strtol(buffer + 15, NULL, 10);
+        }
+        else if (strncasecmp(buffer, "Transfer-Encoding: chunked", 26) == 0)
+        {
+            is_chunked = 1;
+        }
+    }
+
+    // Read body based on Content-Length or chunked encoding
+    if (content_length > 0)
+    {
+        data = malloc(content_length + 1);
+        if (read_fixed(client_fd, data, content_length) > 0)
+        {
+            data[content_length] = '\0';
+            printf("Body: %s\n", data);
+        }
+    }
+    else if (is_chunked)
+    {
+        size_t total_data_length = 0;
+        while (1)
+        {
+            // Read chunk size
+            read_line(client_fd, buffer, BUFFER_SIZE);
+            size_t chunk_size = strtol(buffer, NULL, 16);
+
+            if (chunk_size == 0)
+                break;
+
+            // Read chunk data
+            data = realloc(data, total_data_length + chunk_size + 1);
+            read_fixed(client_fd, data + total_data_length, chunk_size);
+            total_data_length += chunk_size;
+
+            // Read the trailing CRLF
+            read_line(client_fd, buffer, BUFFER_SIZE);
+        }
+        data[total_data_length] = '\0';
+        printf("Body: %s\n", data);
+    }
+
+    free(data);
+}
+
+int main()
+{
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
@@ -85,9 +108,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Bind the socket to the Port
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
+    struct sockaddr_in server_addr = {0};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -99,7 +120,6 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Listen for incoming connections
     if (listen(server_fd, 1) < 0)
     {
         perror("listen");
@@ -108,11 +128,7 @@ int main(int argc, char *argv[])
     }
     printf("Server listening on port %d...\n", PORT);
 
-    // Accept a single client connection
-    struct sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-
-    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+    int client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0)
     {
         perror("accept");
@@ -121,68 +137,9 @@ int main(int argc, char *argv[])
     }
     printf("Client connected...\n");
 
-    char* data;
-    int data_len = 0;
-    char buffer[1024];
+    handle_request(client_fd);
 
-    HttpRequest httpRequest;
-    bool foundHeader = false;
-    bool foundBody = false;
-    
-    ssize_t bytes_received = read(client_fd, buffer, sizeof(buffer));
-
-    if (bytes_received > 0)
-    {
-        data = (char*)malloc(bytes_received);
-        memcpy(data, buffer, bytes_received);
-        data_len += bytes_received;
-
-
-        char headerStopPattern[] = "\r\n\r\n";
-        int headerStopIndex = FindFirstPatternString(data, data_len, headerStopPattern, strlen(headerStopPattern));
-
-        if (headerStopIndex == -1)
-        {            
-            while(1)
-            {
-                bytes_received = read(client_fd, buffer, sizeof(buffer));
-
-                if (bytes_received > 0)
-                {
-                    data = (char*)realloc(data, data_len + bytes_received);
-                    memcpy(data + data_len, buffer, bytes_received);
-                    data_len += bytes_received;
-
-                    PrintCharArray(data, data_len);
-                    // Check if data contains all stop flags and break if so
-
-                    // Find Header stop "\r\n\r\n"
-                    char headerStopPattern[] = "\r\n\r\n";
-                    int headerStopIndex = FindFirstPatternString(data, data_len, headerStopPattern, sizeof(headerStopPattern));
-
-                    if (headerStopIndex != -1)
-                    {
-                        // Check if Header has already been extracted
-                        if (foundHeader)
-                        {
-                            
-                        }
-                        else 
-                        {
-                            // Extract Header
-                        }
-                    }
-                }
-                else
-                {
-                    break;
-                }
-                
-            }
-        }
-    }
-
-    // Clean up
     close(client_fd);
     close(server_fd);
+    return 0;
 }
