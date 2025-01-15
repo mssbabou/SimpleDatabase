@@ -34,4 +34,6 @@ typedef struct
     char *body;
 } HttpRequest;
 
+HttpRequest deserilize_HttpRequest(const char* request);
+
 #endif HTTPSERVER_H

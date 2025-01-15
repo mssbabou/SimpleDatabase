@@ -113,8 +113,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
     printf("Client connected...\n");
-
-    // Handle the client request
+    
     handle_Requests(client_fd);
 
     // Clean up
